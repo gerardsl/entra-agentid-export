@@ -599,7 +599,7 @@ if ($grantedPermissions -contains 'Directory.AccessAsUser.All') {
     Write-Warning 'Token contains Directory.AccessAsUser.All, which Agent ID APIs may reject (403). If that happens, use your own app registration (-ClientId) or app-only auth.'
 }
 if ($tokenType -eq 'Delegated') {
-    Write-Warning 'Per Microsoft Graph docs, sponsors of agent identities and blueprint principals are only readable with application permissions; expect those calls to fail in delegated mode.'
+    Write-Verbose 'Graph docs list sponsors of agent identities and blueprint principals as application-permission only; if those calls fail they are logged in errors.csv.'
 }
 #endregion
 
@@ -1347,6 +1347,7 @@ $html = @"
     <span style="background:#ffedd5">API / resource</span><span style="background:#ecfeff">Federated credential</span>
     &middot; dotted = owner/sponsor/manager &middot; thick = permissions
   </span>
+  <span id="layoutNote" style="color:#64748b"></span>
 </div>
 <div id="graph">Rendering diagram&hellip;</div>
 <details><summary>Mermaid source</summary><pre id="src"></pre></details>
@@ -1361,20 +1362,44 @@ $html = @"
   document.getElementById('zout').onclick = () => { scale /= 1.25; apply(); };
   document.getElementById('zfit').onclick = fit;
   document.getElementById('z100').onclick = () => { scale = 1; apply(); };
+  const flat = src.split('\n').filter(l => !/^\s*subgraph\s/.test(l) && l.trim() !== 'end').join('\n');
+  // Mermaid's default (dagre) layout can crash on large graphs with subgraphs; fall back to ELK, then to no subgraphs.
+  const attempts = [
+    { label: 'dagre layout', layout: 'dagre', text: src },
+    { label: 'ELK layout', layout: 'elk', text: src, elk: true },
+    { label: 'dagre layout without blueprint groups', layout: 'dagre', text: flat }
+  ];
+  let lastError = null;
   try {
     const { default: mermaid } = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
-    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', maxTextSize: 50000000, maxEdges: 200000,
-                         flowchart: { useMaxWidth: false, htmlLabels: true } });
-    const { svg } = await mermaid.render('agentIdGraph', src);
-    host.innerHTML = svg;
-    svgEl = host.querySelector('svg');
+    for (let i = 0; i < attempts.length && !svgEl; i++) {
+      const a = attempts[i];
+      try {
+        if (a.elk) {
+          const { default: elkLayouts } = await import('https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0/dist/mermaid-layout-elk.esm.min.mjs');
+          mermaid.registerLayoutLoaders(elkLayouts);
+        }
+        mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', maxTextSize: 50000000, maxEdges: 200000,
+                             layout: a.layout, flowchart: { useMaxWidth: false, htmlLabels: true } });
+        const { svg } = await mermaid.render('agentIdGraph' + i, a.text);
+        host.innerHTML = svg;
+        svgEl = host.querySelector('svg');
+        document.getElementById('layoutNote').textContent = 'Rendered with ' + a.label + (i > 0 ? ' (fallback)' : '');
+      } catch (e) {
+        lastError = e;
+        console.warn('Render with ' + a.label + ' failed:', e);
+        const leftover = document.getElementById('dagentIdGraph' + i);
+        if (leftover) leftover.remove();
+      }
+    }
+    if (!svgEl) throw lastError;
     const vb = svgEl.viewBox && svgEl.viewBox.baseVal;
     baseW = (vb && vb.width) ? vb.width : svgEl.getBBox().width;
     baseH = (vb && vb.height) ? vb.height : svgEl.getBBox().height;
     svgEl.style.maxWidth = 'none';
     fit();
   } catch (e) {
-    host.textContent = 'Could not render the diagram (' + e + '). Open agentid-graph.mmd in https://mermaid.live or VS Code to view it.';
+    host.textContent = 'Could not render the diagram (' + e + '). Open agentid-graph.mmd in https://mermaid.live (Layout: ELK) or VS Code to view it.';
   }
 </script>
 </body>
