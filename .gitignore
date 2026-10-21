@@ -1,0 +1,3 @@
+# Export output (contains tenant data)
+AgentIdExport-*/
+*.pfx
